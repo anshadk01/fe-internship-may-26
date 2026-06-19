@@ -28,19 +28,33 @@ export default function App() {
           </p>
         </div>
 
+        {/* Error banner — shown above results, non-blocking */}
         {error && (
           <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
             {error}
           </div>
         )}
 
-        {/* TODO: Replace this placeholder with conditional rendering.
-            - Show <LoadingState /> when isLoading is true
-            - Show <ItemList items={results} /> when results exist and not loading
-            - Show <EmptyState query={query} /> when results are empty and not loading */}
-        <div className="text-gray-500 text-sm text-center py-16">
-          Implement useSearch to see results here.
-        </div>
+        {/*
+          Conditional rendering — three mutually exclusive states:
+
+          1. isLoading  → spinner (debounce fired, fetch in-flight)
+          2. results    → list   (fetch resolved with ≥1 item)
+          3. fallthrough → empty  (fetch resolved with 0 items, or initial state)
+
+          We check isLoading first so the list never flashes with stale results
+          while a new fetch is running (prevents "old items → spinner" flicker).
+
+          `query` is forwarded to ItemList so it can highlight matching text
+          inside each result card via the <HighlightText> component.
+        */}
+        {isLoading ? (
+          <LoadingState />
+        ) : results.length > 0 ? (
+          <ItemList items={results} query={query} />
+        ) : (
+          <EmptyState query={query} />
+        )}
       </div>
     </div>
   )
