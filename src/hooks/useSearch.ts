@@ -1,8 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Item } from '../types'
-
-// Uncomment this import when you are ready to wire up the search logic:
-// import { searchItems } from '../services/mockApi'
+import { searchItems } from '../services/mockApi'
+import { useDebounce } from './useDebounce'
 
 export interface UseSearchReturn {
   query: string
@@ -18,32 +17,100 @@ export function useSearch(): UseSearchReturn {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // ── TODO: Implement debounced async search ──────────────────────────────
-  //
-  // 1. DEBOUNCE (300 ms)
-  //    Wait 300 ms after the user stops typing before running the search.
-  //    Cancel any pending timer when a new keystroke arrives.
-  //    Return a cleanup function from useEffect to cancel on unmount.
-  //
-  // 2. ASYNC SEARCH
-  //    Call searchItems(query) after the debounce delay fires.
-  //    - Set isLoading = true before the call.
-  //    - On success: update results, set isLoading = false.
-  //    - On error:   store message in error, set isLoading = false.
-  //    - Empty query: return all items (or clear results -- your choice).
-  //
-  // 3. STALE-RESPONSE PREVENTION
-  //    Rapid typing causes overlapping in-flight requests.
-  //    An older response MUST NOT replace a newer one.
-  //    Example: user types "re" then quickly "react" -- if the "re" response
-  //    arrives after "react", it must be discarded.
-  //    Hint: a cancellation flag or an incrementing request-ID ref both work.
-  //
-  // 4. UNMOUNT CLEANUP
-  //    No pending timers or state updates should run after the hook unmounts.
-  //
-  // You will need useEffect and useRef from React.
-  // ───────────────────────────────────────────────────────────────────────
+  /**
+   * DEBOUNCE — wait for the user to stop typing for 300 ms.
+   *
+   * `query` updates on every keystroke (controlled input).
+   * `debouncedQuery` only updates after 300 ms of inactivity.
+   * The fetch effect below depends on `debouncedQuery`, so it only
+   * fires once the user pauses — never on every keypress.
+   */
+  const debouncedQuery = useDebounce(query, 300)
+
+  /**
+   * STALE-RESPONSE PREVENTION — monotonic request counter.
+   *
+   * Problem: user types "re" (request A) then "react" (request B).
+   * If A resolves after B, A's stale results would overwrite B's fresh ones.
+   *
+   * Solution: every new fetch increments this counter and captures its value
+   * in a local variable. Before committing any state, we compare the captured
+   * value against the current ref. If they don't match, a newer request has
+   * already taken ownership — discard silently.
+   *
+   * useRef (not useState) because changing it must never trigger a re-render.
+   */
+  const requestIdRef = useRef(0)
+
+  /**
+   * UNMOUNT GUARD — tracks whether the component is still alive.
+   *
+   * Async callbacks complete on their own schedule. By the time a response
+   * arrives the component may be unmounted (e.g. user navigated away).
+   * Calling setState on an unmounted component is a no-op warning in dev and
+   * a potential memory leak. This ref lets every callback bail out early.
+   */
+  const isMountedRef = useRef(false)
+
+  // Set/clear the mount flag once, independently of the search logic.
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+    }
+  }, [])
+
+  /**
+   * ASYNC SEARCH EFFECT
+   *
+   * Runs whenever `debouncedQuery` changes (i.e. after the 300 ms debounce
+   * window closes). Handles loading state, errors, and stale responses.
+   */
+  useEffect(() => {
+    // Claim a unique ID for this particular fetch invocation.
+    const capturedId = ++requestIdRef.current
+
+    const fetchResults = async () => {
+      // Safety: component may have unmounted while the debounce timer ran.
+      if (!isMountedRef.current) return
+
+      setIsLoading(true)
+      setError(null)
+
+      try {
+        // mockApi returns all items for '' and filtered items otherwise.
+        const data = await searchItems(debouncedQuery)
+
+        /**
+         * Stale-response check.
+         * If capturedId is no longer the latest ID, a newer request is
+         * already in flight or has resolved — throw this result away.
+         */
+        if (isMountedRef.current && capturedId === requestIdRef.current) {
+          setResults(data)
+        }
+      } catch (err) {
+        // Only surface the error if this request is still the active one.
+        if (isMountedRef.current && capturedId === requestIdRef.current) {
+          setError(err instanceof Error ? err.message : 'Something went wrong')
+          setResults([])
+        }
+      } finally {
+        // Always clear loading — but only for the request that owns this cycle.
+        if (isMountedRef.current && capturedId === requestIdRef.current) {
+          setIsLoading(false)
+        }
+      }
+    }
+
+    fetchResults()
+
+    /**
+     * No cleanup needed here: the debounce timer lives inside useDebounce and
+     * is already cancelled when debouncedQuery changes. The requestIdRef +
+     * isMountedRef guards handle in-flight fetch protection.
+     */
+  }, [debouncedQuery])
 
   return { query, setQuery, results, isLoading, error }
 }
